@@ -56,6 +56,7 @@ enum ServiceRegistry {
             LocationService.shared,
             MapsService.shared,
             MessageService.shared,
+            MessageSendService.shared,
             RemindersService.shared,
             ShortcutsService.shared,
             UtilitiesService.shared,
@@ -73,6 +74,7 @@ enum ServiceRegistry {
         locationEnabled: Binding<Bool>,
         mapsEnabled: Binding<Bool>,
         messagesEnabled: Binding<Bool>,
+        messageSendEnabled: Binding<Bool>,
         remindersEnabled: Binding<Bool>,
         shortcutsEnabled: Binding<Bool>,
         utilitiesEnabled: Binding<Bool>,
@@ -120,6 +122,13 @@ enum ServiceRegistry {
                 color: .green,
                 service: MessageService.shared,
                 binding: messagesEnabled
+            ),
+            ServiceConfig(
+                name: "iMessage Send",
+                iconName: "paperplane.fill",
+                color: .teal,
+                service: MessageSendService.shared,
+                binding: messageSendEnabled
             ),
             ServiceConfig(
                 name: "Reminders",
@@ -171,6 +180,7 @@ final class ServerController: ObservableObject {
     @AppStorage("locationEnabled") private var locationEnabled = false
     @AppStorage("mapsEnabled") private var mapsEnabled = true  // Default enabled
     @AppStorage("messagesEnabled") private var messagesEnabled = false
+    @AppStorage("messageSendEnabled") private var messageSendEnabled = false
     @AppStorage("remindersEnabled") private var remindersEnabled = false
     @AppStorage("shortcutsEnabled") private var shortcutsEnabled = false
     @AppStorage("utilitiesEnabled") private var utilitiesEnabled = true  // Default enabled
@@ -188,6 +198,7 @@ final class ServerController: ObservableObject {
             locationEnabled: $locationEnabled,
             mapsEnabled: $mapsEnabled,
             messagesEnabled: $messagesEnabled,
+            messageSendEnabled: $messageSendEnabled,
             remindersEnabled: $remindersEnabled,
             shortcutsEnabled: $shortcutsEnabled,
             utilitiesEnabled: $utilitiesEnabled,

@@ -8,6 +8,8 @@
 	<array>
 		<string>_mcp._tcp</string>
 	</array>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>iMCP needs permission to send messages through Messages.app.</string>
 	<key>SUEnableInstallerLauncherService</key>
 	<true/>
 	<key>SUFeedURL</key>
