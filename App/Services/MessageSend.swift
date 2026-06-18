@@ -40,7 +40,7 @@ final class MessageSendService: Service {
             description: "Send a text message to an existing Messages chat",
             inputSchema: .object(
                 properties: [
-                    "chat_id": .integer(description: "Messages chat row id"),
+                    "chat_id": .string(description: "Messages chat id"),
                     "text": .string(description: "Message body"),
                 ],
                 required: ["chat_id", "text"],
@@ -52,7 +52,7 @@ final class MessageSendService: Service {
                 openWorldHint: false
             )
         ) { arguments in
-            guard let chatID = arguments["chat_id"]?.intValue else {
+            guard let chatID = arguments["chat_id"]?.stringValue else {
                 throw MessageSendError.invalidChatID
             }
             let text = arguments["text"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -60,7 +60,7 @@ final class MessageSendService: Service {
                 throw MessageSendError.emptyText
             }
 
-            let target = try await MessageService.shared.sendTarget(chatID: Int64(chatID))
+            let target = try await MessageService.shared.sendTarget(chatID: chatID)
             try MessagesAutomation.send(text: text, to: target)
             sendLog.notice("Sent message through Messages chat \(chatID)")
             return MessagesSendPayload(
@@ -94,7 +94,7 @@ private enum MessageSendError: LocalizedError {
 
 private struct MessagesSendPayload: Encodable {
     let status: String
-    let chatID: Int64
+    let chatID: String
     let pendingMessageID: String
 }
 

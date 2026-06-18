@@ -1,6 +1,5 @@
 import AppKit
 import OSLog
-import SQLite3
 import UniformTypeIdentifiers
 import iMessage
 
@@ -8,7 +7,6 @@ private let log = Logger.service("messages")
 private let messagesDatabasePath = "/Users/\(NSUserName())/Library/Messages/chat.db"
 private let messagesDatabaseBookmarkKey: String = "me.mattt.iMCP.messagesDatabaseBookmark"
 private let defaultLimit = 30
-private let appleEpochOffset: TimeInterval = 978307200
 
 final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
     static let shared = MessageService()
@@ -189,9 +187,11 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
             try await self.activate()
             let limit = clampedInt(arguments["limit"]?.intValue, defaultValue: 10, minimum: 1, maximum: 100)
             let offset = clampedInt(arguments["offset"]?.intValue, defaultValue: 0, minimum: 0, maximum: 10000)
-            let chats = try self.fetchChats(limit: limit + 1, offset: offset)
+            let db = try self.createDatabaseConnection()
+            let fetchedChats = try db.fetchChats(limit: limit + offset + 1)
+            let chats = Array(fetchedChats.dropFirst(offset).prefix(limit + 1))
             return MessagesChatsPayload(
-                chats: Array(chats.prefix(limit)),
+                chats: chats.prefix(limit).map { MessagesChat(chat: $0) },
                 hasMore: chats.count > limit
             )
         }
@@ -201,7 +201,7 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
             description: "Fetch Messages history for one chat",
             inputSchema: .object(
                 properties: [
-                    "chat_id": .integer(description: "Messages chat row id"),
+                    "chat_id": .string(description: "Messages chat id"),
                     "limit": .integer(description: "Maximum messages to return", default: .int(10)),
                     "offset": .integer(description: "Number of messages to skip", default: .int(0)),
                 ],
@@ -215,14 +215,19 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
             )
         ) { arguments in
             try await self.activate()
-            guard let chatID = arguments["chat_id"]?.intValue else {
+            guard let chatID = arguments["chat_id"]?.stringValue, !chatID.isEmpty else {
                 throw DatabaseAccessError.invalidChatID
             }
             let limit = clampedInt(arguments["limit"]?.intValue, defaultValue: 10, minimum: 1, maximum: 100)
             let offset = clampedInt(arguments["offset"]?.intValue, defaultValue: 0, minimum: 0, maximum: 10000)
-            let messages = try self.fetchHistory(chatID: Int64(chatID), limit: limit + 1, offset: offset)
+            let db = try self.createDatabaseConnection()
+            let fetchedMessages = try db.fetchMessages(
+                for: Chat.ID(rawValue: chatID),
+                limit: limit + offset + 1
+            )
+            let messages = Array(fetchedMessages.dropFirst(offset).prefix(limit + 1))
             return MessagesHistoryPayload(
-                messages: Array(messages.prefix(limit)),
+                messages: messages.prefix(limit).map { MessagesMessage(chatID: chatID, message: $0) },
                 hasMore: messages.count > limit
             )
         }
@@ -232,7 +237,7 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
         return FileManager.default.isReadableFile(atPath: messagesDatabasePath)
     }
 
-    private enum DatabaseAccessError: LocalizedError {
+    enum DatabaseAccessError: LocalizedError {
         case noBookmarkFound
         case securityScopeAccessFailed
         case invalidParticipants
@@ -296,166 +301,10 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
         }
     }
 
-    func sendTarget(chatID: Int64) async throws -> MessageSendTarget {
+    func sendTarget(chatID: String) async throws -> MessageSendTarget {
         try await activate()
-        guard let target = try fetchSendTarget(chatID: chatID) else {
-            throw DatabaseAccessError.invalidChatID
-        }
-        return target
-    }
-
-    private func withDatabasePath<T>(_ operation: (String) throws -> T) throws -> T {
-        if canAccessDatabaseAtDefaultPath {
-            return try operation(messagesDatabasePath)
-        }
-
-        let databaseURL = try resolveBookmarkURL()
-        return try withSecurityScopedAccess(databaseURL) { url in
-            try operation(url.path)
-        }
-    }
-
-    private func withSQLite<T>(_ operation: (OpaquePointer?) throws -> T) throws -> T {
-        try withDatabasePath { path in
-            var database: OpaquePointer?
-            let flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX
-            guard sqlite3_open_v2(path, &database, flags, nil) == SQLITE_OK else {
-                defer { sqlite3_close(database) }
-                throw sqliteError(database, fallback: "Could not open Messages database")
-            }
-            defer { sqlite3_close(database) }
-            return try operation(database)
-        }
-    }
-
-    private func fetchChats(limit: Int, offset: Int) throws -> [MessagesChat] {
-        try withSQLite { database in
-            let sql = """
-                SELECT
-                  c.ROWID,
-                  COALESCE(c.guid, ''),
-                  COALESCE(c.chat_identifier, ''),
-                  COALESCE(c.display_name, ''),
-                  COALESCE(c.service_name, ''),
-                  COALESCE(c.style, 0),
-                  COALESCE((
-                    SELECT m.text
-                    FROM chat_message_join cmj
-                    JOIN message m ON m.ROWID = cmj.message_id
-                    WHERE cmj.chat_id = c.ROWID
-                    ORDER BY m.date DESC
-                    LIMIT 1
-                  ), ''),
-                  COALESCE((
-                    SELECT m.date
-                    FROM chat_message_join cmj
-                    JOIN message m ON m.ROWID = cmj.message_id
-                    WHERE cmj.chat_id = c.ROWID
-                    ORDER BY m.date DESC
-                    LIMIT 1
-                  ), 0)
-                FROM chat c
-                WHERE EXISTS (
-                  SELECT 1 FROM chat_message_join cmj WHERE cmj.chat_id = c.ROWID
-                )
-                ORDER BY 8 DESC
-                LIMIT ? OFFSET ?
-                """
-            var statement: OpaquePointer?
-            guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
-                throw sqliteError(database, fallback: "Could not prepare chat query")
-            }
-            defer { sqlite3_finalize(statement) }
-            sqlite3_bind_int(statement, 1, Int32(limit))
-            sqlite3_bind_int(statement, 2, Int32(offset))
-
-            var chats: [MessagesChat] = []
-            while sqlite3_step(statement) == SQLITE_ROW {
-                let dateValue = sqlite3_column_int64(statement, 7)
-                chats.append(MessagesChat(
-                    id: sqlite3_column_int64(statement, 0),
-                    guid: sqliteText(statement, 1),
-                    identifier: sqliteText(statement, 2),
-                    name: sqliteText(statement, 3),
-                    service: normalizedService(sqliteText(statement, 4), fallback: sqliteText(statement, 2)),
-                    isGroup: sqlite3_column_int(statement, 5) != 45,
-                    lastMessageText: sqliteText(statement, 6),
-                    lastMessageAt: dateString(dateValue)
-                ))
-            }
-            return chats
-        }
-    }
-
-    private func fetchHistory(chatID: Int64, limit: Int, offset: Int) throws -> [MessagesMessage] {
-        try withSQLite { database in
-            let sql = """
-                SELECT
-                  m.ROWID,
-                  COALESCE(m.guid, ''),
-                  COALESCE(m.text, ''),
-                  COALESCE(m.date, 0),
-                  COALESCE(m.is_from_me, 0),
-                  COALESCE(h.id, '')
-                FROM chat_message_join cmj
-                JOIN message m ON m.ROWID = cmj.message_id
-                LEFT JOIN handle h ON h.ROWID = m.handle_id
-                WHERE cmj.chat_id = ?
-                ORDER BY m.date DESC
-                LIMIT ? OFFSET ?
-                """
-            var statement: OpaquePointer?
-            guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
-                throw sqliteError(database, fallback: "Could not prepare message query")
-            }
-            defer { sqlite3_finalize(statement) }
-            sqlite3_bind_int64(statement, 1, chatID)
-            sqlite3_bind_int(statement, 2, Int32(limit))
-            sqlite3_bind_int(statement, 3, Int32(offset))
-
-            var messages: [MessagesMessage] = []
-            while sqlite3_step(statement) == SQLITE_ROW {
-                messages.append(MessagesMessage(
-                    id: sqlite3_column_int64(statement, 0),
-                    guid: sqliteText(statement, 1),
-                    chatID: chatID,
-                    text: sqliteText(statement, 2),
-                    createdAt: dateString(sqlite3_column_int64(statement, 3)),
-                    isFromMe: sqlite3_column_int(statement, 4) != 0,
-                    sender: sqliteText(statement, 5)
-                ))
-            }
-            return messages
-        }
-    }
-
-    private func fetchSendTarget(chatID: Int64) throws -> MessageSendTarget? {
-        try withSQLite { database in
-            let sql = """
-                SELECT
-                  c.ROWID,
-                  COALESCE(c.guid, ''),
-                  COALESCE(c.chat_identifier, ''),
-                  COALESCE(c.service_name, '')
-                FROM chat c
-                WHERE c.ROWID = ?
-                LIMIT 1
-                """
-            var statement: OpaquePointer?
-            guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK else {
-                throw sqliteError(database, fallback: "Could not prepare chat target query")
-            }
-            defer { sqlite3_finalize(statement) }
-            sqlite3_bind_int64(statement, 1, chatID)
-
-            guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
-            return MessageSendTarget(
-                chatID: sqlite3_column_int64(statement, 0),
-                guid: sqliteText(statement, 1),
-                identifier: sqliteText(statement, 2),
-                service: normalizedService(sqliteText(statement, 3), fallback: sqliteText(statement, 2))
-            )
-        }
+        guard !chatID.isEmpty else { throw DatabaseAccessError.invalidChatID }
+        return MessageSendTarget(chatID: chatID)
     }
 
     private var canAccessDatabaseUsingBookmark: Bool {
@@ -534,6 +383,14 @@ final class MessageService: NSObject, Service, NSOpenSavePanelDelegate {
     }
 }
 
+struct MessageSendTarget {
+    let chatID: String
+
+    var appleScriptChatID: String {
+        chatID
+    }
+}
+
 struct MessagesChatsPayload: Encodable {
     let chats: [MessagesChat]
     let hasMore: Bool
@@ -545,35 +402,38 @@ struct MessagesHistoryPayload: Encodable {
 }
 
 struct MessagesChat: Encodable {
-    let id: Int64
-    let guid: String
-    let identifier: String
+    let id: String
     let name: String
+    let participants: [String]
     let service: String
     let isGroup: Bool
-    let lastMessageText: String
     let lastMessageAt: String
+
+    init(chat: Chat) {
+        id = chat.id.rawValue
+        name = chat.displayName ?? ""
+        participants = chat.participants.map { $0.rawValue }
+        service = serviceFromChatID(chat.id.rawValue)
+        isGroup = participants.count > 1
+        lastMessageAt = chat.lastMessageDate?.formatted(.iso8601) ?? ""
+    }
 }
 
 struct MessagesMessage: Encodable {
-    let id: Int64
-    let guid: String
-    let chatID: Int64
+    let id: String
+    let chatID: String
     let text: String
     let createdAt: String
     let isFromMe: Bool
     let sender: String
-}
 
-struct MessageSendTarget {
-    let chatID: Int64
-    let guid: String
-    let identifier: String
-    let service: String
-
-    var appleScriptChatID: String {
-        if !guid.isEmpty { return guid }
-        return identifier
+    init(chatID: String, message: Message) {
+        id = message.id.rawValue
+        self.chatID = chatID
+        text = message.text
+        createdAt = message.date.formatted(.iso8601)
+        isFromMe = message.isFromMe
+        sender = message.isFromMe ? "me" : (message.sender?.rawValue ?? "unknown")
     }
 }
 
@@ -582,30 +442,6 @@ private func clampedInt(_ value: Int?, defaultValue: Int, minimum: Int, maximum:
     return min(max(raw, minimum), maximum)
 }
 
-private func sqliteText(_ statement: OpaquePointer?, _ index: Int32) -> String {
-    guard let text = sqlite3_column_text(statement, index) else { return "" }
-    return String(cString: text)
-}
-
-private func sqliteError(_ database: OpaquePointer?, fallback: String) -> NSError {
-    let message = database.flatMap { sqlite3_errmsg($0) }.map { String(cString: $0) } ?? fallback
-    return NSError(domain: "MessageService", code: 1, userInfo: [
-        NSLocalizedDescriptionKey: message.isEmpty ? fallback : message
-    ])
-}
-
-private func dateString(_ raw: Int64) -> String {
-    guard raw > 0 else { return "" }
-    let seconds: TimeInterval
-    if raw > 10_000_000_000 {
-        seconds = (Double(raw) / 1_000_000_000) + appleEpochOffset
-    } else {
-        seconds = Double(raw) + appleEpochOffset
-    }
-    return Date(timeIntervalSince1970: seconds).formatted(.iso8601)
-}
-
-private func normalizedService(_ service: String, fallback: String) -> String {
-    let text = service.isEmpty ? fallback : service
-    return text.localizedCaseInsensitiveContains("sms") ? "SMS" : "iMessage"
+private func serviceFromChatID(_ chatID: String) -> String {
+    return chatID.localizedCaseInsensitiveContains("sms") ? "SMS" : "iMessage"
 }
