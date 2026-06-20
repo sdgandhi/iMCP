@@ -125,7 +125,7 @@ enum ServiceRegistry {
             ),
             ServiceConfig(
                 name: "iMessage Send",
-                iconName: "paperplane.fill",
+                iconName: "message.fill",
                 color: .teal,
                 service: MessageSendService.shared,
                 binding: messageSendEnabled

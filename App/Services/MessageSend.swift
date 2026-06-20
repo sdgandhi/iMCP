@@ -10,7 +10,14 @@ final class MessageSendService: Service {
     static let shared = MessageSendService()
 
     var isActivated: Bool {
-        get async { false }
+        get async {
+            do {
+                try MessagesAutomation.checkAccess()
+                return true
+            } catch {
+                return false
+            }
+        }
     }
 
     func activate() async throws {
@@ -114,44 +121,33 @@ private enum MessagesAutomation {
         }
 
         try runAppleScript("""
-            on run argv
-                set targetChatID to item 1 of argv
-                set messageText to item 2 of argv
-                tell application "Messages"
-                    set targetChat to chat id targetChatID
-                    send messageText to targetChat
-                end tell
-            end run
-            """, arguments: [chatID, text])
+            tell application "Messages"
+                set targetChat to chat id \(appleScriptString(chatID))
+                send \(appleScriptString(text)) to targetChat
+            end tell
+            """)
     }
 
-    private static func runAppleScript(_ source: String, arguments: [String] = []) throws {
+    private static func runAppleScript(_ source: String) throws {
         guard let script = NSAppleScript(source: source) else {
             throw MessageSendError.appleScriptFailure("Unable to compile Messages AppleScript")
         }
 
         var errorInfo: NSDictionary?
-        let event = NSAppleEventDescriptor(
-            eventClass: AEEventClass(kASAppleScriptSuite),
-            eventID: AEEventID(kASSubroutineEvent),
-            targetDescriptor: nil,
-            returnID: AEReturnID(kAutoGenerateReturnID),
-            transactionID: AETransactionID(kAnyTransactionID)
-        )
-        event.setParam(
-            NSAppleEventDescriptor(string: "run"),
-            forKeyword: AEKeyword(keyASSubroutineName)
-        )
-        let list = NSAppleEventDescriptor.list()
-        for (index, value) in arguments.enumerated() {
-            list.insert(NSAppleEventDescriptor(string: value), at: index + 1)
-        }
-        event.setParam(list, forKeyword: keyDirectObject)
-        script.executeAppleEvent(event, error: &errorInfo)
+        script.executeAndReturnError(&errorInfo)
 
         guard let errorInfo else { return }
         let message = (errorInfo[NSAppleScript.errorMessage] as? String)
             ?? "Messages automation is not authorized"
         throw MessageSendError.appleScriptFailure(message)
+    }
+
+    private static func appleScriptString(_ value: String) -> String {
+        let escaped = value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\r", with: "\\r")
+            .replacingOccurrences(of: "\n", with: "\\n")
+        return "\"\(escaped)\""
     }
 }
