@@ -716,10 +716,10 @@
 /* Begin XCRemoteSwiftPackageReference section */
 		F809556C2D7888920055B911 /* XCRemoteSwiftPackageReference "madrid" */ = {
 			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/loopwork-ai/madrid";
+			repositoryURL = "https://github.com/sdgandhi/Madrid";
 			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 0.1.0;
+				branch = "kaios-unread-muted";
+				kind = branch;
 			};
 		};
 		F825BDBD2D9AD00E0063ADD7 /* XCRemoteSwiftPackageReference "swift-service-lifecycle" */ = {

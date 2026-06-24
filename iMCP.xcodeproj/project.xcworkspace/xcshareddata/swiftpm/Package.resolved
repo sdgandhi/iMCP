@@ -1,5 +1,5 @@
 {
-  "originHash" : "0604c8a8c049fb6e696fcd8af68cdc36f2f23f938eec962e31f24cc19d550d45",
+  "originHash" : "b644e205cab6ea00da7026b8fc3b0f71f258d5ccea11dbe4c55dec1323f11be4",
   "pins" : [
     {
       "identity" : "eventsource",
@@ -22,10 +22,10 @@
     {
       "identity" : "madrid",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/loopwork-ai/madrid",
+      "location" : "https://github.com/sdgandhi/Madrid",
       "state" : {
-        "revision" : "9d9fdb20424483fb592e5a026d9d0816cd5c43eb",
-        "version" : "0.1.0"
+        "branch" : "kaios-unread-muted",
+        "revision" : "2e6a036b30a5d5ab3712eb6d663018a8db33e6d9"
       }
     },
     {

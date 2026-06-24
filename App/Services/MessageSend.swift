@@ -76,11 +76,48 @@ final class MessageSendService: Service {
                 pendingMessageID: "imessage-pending-\(UUID().uuidString)"
             )
         }
+
+        Tool(
+            name: "messages_send_direct",
+            description: "Send a text message to a Messages recipient by phone number or email",
+            inputSchema: .object(
+                properties: [
+                    "recipient": .string(description: "Phone number or email address"),
+                    "text": .string(description: "Message body"),
+                ],
+                required: ["recipient", "text"],
+                additionalProperties: false
+            ),
+            annotations: .init(
+                title: "Send Direct Message",
+                readOnlyHint: false,
+                openWorldHint: false
+            )
+        ) { arguments in
+            let recipient = arguments["recipient"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let text = arguments["text"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !recipient.isEmpty else {
+                throw MessageSendError.invalidRecipient
+            }
+            guard !text.isEmpty else {
+                throw MessageSendError.emptyText
+            }
+
+            try MessagesAutomation.send(text: text, toRecipient: recipient)
+            let chatID = try await MessageService.shared.chatID(forParticipant: recipient) ?? recipient
+            sendLog.notice("Sent direct message through Messages")
+            return MessagesSendPayload(
+                status: "sent",
+                chatID: chatID,
+                pendingMessageID: "imessage-pending-\(UUID().uuidString)"
+            )
+        }
     }
 }
 
 private enum MessageSendError: LocalizedError {
     case invalidChatID
+    case invalidRecipient
     case emptyText
     case missingChatIdentifier
     case appleScriptFailure(String)
@@ -89,6 +126,8 @@ private enum MessageSendError: LocalizedError {
         switch self {
         case .invalidChatID:
             return "Invalid Messages chat id"
+        case .invalidRecipient:
+            return "Valid Messages recipient required"
         case .emptyText:
             return "Message text is required"
         case .missingChatIdentifier:
@@ -124,6 +163,16 @@ private enum MessagesAutomation {
             tell application "Messages"
                 set targetChat to chat id \(appleScriptString(chatID))
                 send \(appleScriptString(text)) to targetChat
+            end tell
+            """)
+    }
+
+    static func send(text: String, toRecipient recipient: String) throws {
+        try runAppleScript("""
+            tell application "Messages"
+                set targetService to 1st service whose service type = iMessage
+                set targetBuddy to buddy \(appleScriptString(recipient)) of targetService
+                send \(appleScriptString(text)) to targetBuddy
             end tell
             """)
     }
